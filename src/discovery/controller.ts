@@ -5,7 +5,7 @@ import type { PromptAssembly } from '../adapter/dsh/types.js'
 import type {} from '../adapter/dsh/types.js'
 import { resolveDiscoveryConfig } from '../config.js'
 import { NativeFileTools } from '../projections/native/runtime.js'
-import { nativeProviders, registerNativeProviderAtScope, claimNativeSelection } from '../publication/providers.js'
+import { nativeProviders, registerNativeProviderAtScope, claimNativeSelection, ptcSurfaceClaimed } from '../publication/providers.js'
 import { loadScopes } from '../adapter/dsh/host.js'
 import { onToolChange } from '../publication/changes.js'
 import { ownScopes } from '../publication/ownership.js'
@@ -106,6 +106,13 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
     }
     const ptcOnly = (assembly: PromptAssembly): boolean => assembly.sections.some(section => section.name === 'tools:ptc-only' && Boolean(section.text.trim()))
     const invalidate = (entry: Entry) => { ++entry.revision; entry.presentation = undefined }
+    // A session this component can actually coordinate: it has a scope context, this
+    // component owns it, and its mode keeps discovery tools in play. Both the
+    // reconcile loop and the unattributed branch must agree on it — a representative
+    // that reconcile would filter out leaves the "at least one probe" contract
+    // silently degraded to zero probes.
+    const coordinable = (agent: Agent, entry: Entry | undefined): boolean =>
+      Boolean(entry?.ctx && ownership?.owns(agent) && (externalEnabled ? gate.allows(agent) : permitted(agent)))
     const inputs = (agent: Agent): unknown[] => {
       const policy = ctx.get('sandboxPolicy')?.resolve({ session: agent.session })
       return [agent.ctx, agent.session, currentSessionDirectory(ctx, agent), policy?.mode, policy?.workspaceRoot, policy?.sessionId]
@@ -117,6 +124,10 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
       const entry = entries.get(agent)
       if (!entry || !gate.allows(agent)) return false
       if (fresh) invalidate(entry)
+      // An exact PTC claim already excludes Native tools. Publication changes
+      // cannot turn that claim into a Native presentation; only a fresh probe
+      // may re-admit discovery after an unannounced dynamic-provider change.
+      if (!fresh && ptcSurfaceClaimed(ctx, agent)) return false
       const current = inputs(agent), revision = entry.revision
       if (entry.presentation && same(entry.presentation.inputs, current)) return entry.presentation.native
       const result = await isNativePresentation(prompt, agent, signal)
@@ -161,7 +172,7 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
         for (const agent of family) {
           if (stopped || !task.current()) return
           const entry = entries.get(agent)
-          if (entry?.ctx && ownership?.owns(agent) && (externalEnabled ? gate.allows(agent) : permitted(agent)) && await task.wait(native(agent, false, task.signal)).catch(() => false)) ready.add(agent)
+          if (coordinable(agent, entry) && await task.wait(native(agent, false, task.signal)).catch(() => false)) ready.add(agent)
         }
         if (stopped || !task.current()) return
         mutating = true; ownership?.begin()
@@ -283,6 +294,32 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
       for (const entry of entries.values()) invalidate(entry)
       void reconcile()
     }
+    // A prompt-driven change can move any scope's presentation, but paying one
+    // synchronous assembly per live session is what made session creation scale
+    // with the live count. Probe a single representative — the conservative
+    // contract is "at least one probe", not "every session" — and leave the rest
+    // stale: each re-observes its presentation at its next real assembly, and a
+    // tool call still re-probes before executing (`native(agent, true, ...)`).
+    // Publication-set changes (modes, runtime, configuration) keep using
+    // `refresh`, which must visit every entry to withdraw stale registrations.
+    const staleAll = () => {
+      if (stopped) return
+      const representative = [...entries].find(([agent, entry]) => coordinable(agent, entry))
+      if (!representative) {
+        for (const entry of entries.values()) invalidate(entry)
+        return
+      }
+      // Invalidate the representative alone first. `reconcile` runs its body on a
+      // later microtask and walks the representative's whole scope family; clearing
+      // the siblings here would empty their caches before that walk starts and the
+      // family would be re-probed member by member. The siblings keep their cached
+      // verdict for this round, then go stale below once the probe has run.
+      invalidate(representative[1])
+      void reconcile([representative[0]]).finally(() => {
+        if (stopped) return
+        for (const [agent, entry] of entries) if (agent !== representative[0]) invalidate(entry)
+      })
+    }
     ;({ scopeChainOf } = await loadScopes())
     if (externalEnabled) {
       await prepareProviders(ctx)
@@ -299,11 +336,22 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
         refresh()
       }), 'dsh-ops: external provider lifecycle')
     }
-    onToolChange(ctx, scopes => {
+    onToolChange(ctx, (scopes, origin) => {
       if (mutating || ownership?.publishing()) return
-      if (!scopes?.length) { refresh(); return }
+      if (!scopes?.length) { staleAll(); return }
       const affected = new Set<Agent>()
       for (const [agent, entry] of entries) if (scopes.some(scope => scopeChainOf(agent).includes(scope))) { invalidate(entry); affected.add(agent) }
+      if (!affected.size) {
+        // This package's own window named a scope it knows is unrelated to every
+        // tracked session — a sibling row's registration. It cannot have moved this
+        // row's verdicts, so leaving the cache intact is the whole point of the
+        // attribution. A scope the HOST named that sits on no tracked chain is the
+        // opposite case: host state this row has not admitted yet, which may already
+        // have changed the registry, so it takes the conservative path.
+        if (origin !== 'host') return
+        staleAll()
+        return
+      }
       void reconcile(affected)
     })
     if (externalEnabled) {
@@ -311,7 +359,8 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
         refresh(); inner.effect(() => () => refresh())
       })
     }
-    ctx.on('system-prompt/change', refresh)
+    // A prompt change moves presentation only, so it takes the lazy path.
+    ctx.on('system-prompt/change', staleAll)
     // A mode row toggling changes which capabilities stay resident and therefore
     // must leave the discovery pool.
     if (gate.watch) ctx.effect(() => gate.watch!(refresh), 'dsh-ops: discovery integration observer')
@@ -343,6 +392,9 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
       mutating = true
       try { cancelEntry(entry, 'Native presentation withdrawn'); clear(entry) }
       finally { mutating = false }
+      // The withdrawal already settled this probe's verdict. Its stale tool list
+      // is private to the inspection; only a public assembly needs rebuilding.
+      if (isPresentationProbe(context)) return result
       // Rebuild through the public host service after removing only our tools.
       // This cannot activate pending requests or rewrite another provider's text.
       return prompt.assemble(context)

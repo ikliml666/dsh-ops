@@ -79,6 +79,7 @@ export function claimNativeSelection(ctx: Host, scope: unknown, names: ReadonlyS
   return () => { owner.selections.delete(selection); changed(owner, scope); refresh(owner, scope) }
 }
 /** Yield only this plugin's registrations in the exact layer being claimed. */
+export function ptcSurfaceClaimed(ctx: Host, scope: unknown): boolean { return state(ctx).ptc.has(scope) }
 export function claimPtcSurface(ctx: Host, scope: unknown): () => void {
   const owner = state(ctx)
   owner.ptc.add(scope); refresh(owner, scope)
@@ -99,7 +100,7 @@ export function trackNativeShadow(ctx: Host, scope: unknown, definition: ToolDef
  * scope, which made one unattributed change rebuild the view 82,365 times over
  * 198 sessions. The view already holds every answer this scan needs, so read it
  * once and look the names up in the map it returned. A host that serves no view
- * still has `get()`; correctness outranks the cost, exactly as in `surfaceOf`.
+ * still resolves through `get()`, as `surfaceOf` already does.
  * @param tools - the tool registry, or undefined before it is provided.
  * @param scope - the scope to read, or undefined for the global layer.
  * @returns a lookup returning the definition that scope resolves, if any.
