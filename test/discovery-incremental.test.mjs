@@ -5,6 +5,7 @@ import Subprocess from '@deepseek-ai/dsh-subprocess-local'
 import Sandbox from '@deepseek-ai/dsh-sandbox-local'
 import * as discoveryModule from '../lib/discovery/index.js'
 import { isPresentationProbe } from '../lib/presentation.js'
+import { withToolChange } from '../lib/publication/changes.js'
 import { assert, test, report, waitFor, withTempDir } from './lib/harness.mjs'
 import { bootHost, scopedToolNames, shutdown } from './lib/host.mjs'
 import { WORKER, requireWorker } from './lib/boundary.mjs'
@@ -357,6 +358,60 @@ await test('unloading during a probe cannot resurrect registrations or leave cha
     await ctx.serial('tools/change'); await ctx.serial('system-prompt/change'); await tick()
     assert.equal(counts.size, 0)
   } finally { release?.(); await shutdown(ctx) }
+}))
+
+await test('an unattributed prompt change is answered by one scope per family', () => withTempDir('discovery-incremental', async dir => {
+  const { ctx, counts, mint, flush } = await setup(dir)
+  try {
+    // A parent and its child form one family. Clearing every member before the family
+    // is probed would make reconcile walk it member by member, so the count is what
+    // separates "one representative answers" from "every member re-derives".
+    const owner = await mint(), child = await mint(owner)
+    await flush(owner); await flush(child)
+    counts.clear()
+    await ctx.serial('system-prompt/change'); await tick()
+    const spent = [...counts.values()].reduce((sum, count) => sum + count, 0)
+    console.log(`  unattributed prompt change: probes=${spent}`)
+    assert.equal(spent, 1, 'one scope answers for its whole family')
+    assert.ok(visible(ctx, owner) && visible(ctx, child))
+  } finally { await shutdown(ctx) }
+}))
+
+await test('a family sibling retired with its representative re-observes before its next assembly', () => withTempDir('discovery-incremental', async dir => {
+  const { ctx, prompt, counts, mint, flush } = await setup(dir)
+  try {
+    const owner = await mint(), child = await mint(owner)
+    await flush(owner); await flush(child)
+    assert.ok(visible(ctx, child))
+    // Collapse every scope to PTC while each scope's own surface stays put, so the
+    // sibling's cached Native verdict is only retired by the invalidation that follows
+    // the representative probe.
+    const lift = prompt.section({ name: 'tools:ptc-only', order: 20, text: 'PTC only' })
+    await tick()
+    await ctx.serial('system-prompt/change')
+    for (let i = 0; i < 8; i++) await tick()
+    await flush(child)
+    console.log(`  sibling after the representative round: native=${visible(ctx, child)}`)
+    assert.equal(visible(ctx, child), false, 'the sibling must not answer from the verdict the representative round retired')
+    lift()
+  } finally { await shutdown(ctx) }
+}))
+
+await test('a change this package attributes itself never republishes an unrelated verdict', () => withTempDir('discovery-incremental', async dir => {
+  const { ctx, counts, mint, flush } = await setup(dir)
+  try {
+    const owner = await mint(), sibling = await mint()
+    await flush(owner); await flush(sibling)
+    counts.clear()
+    const stranger = {}
+    await withToolChange([stranger], () => ctx.emit('tools/change'))
+    await tick()
+    assert.equal(counts.size, 0, 'a locally attributed scope on no tracked chain cannot have moved a verdict')
+    // The host naming the same scope is the opposite case: registry state this row has
+    // not admitted yet, which takes the conservative path.
+    await ctx.serial('tools/change', { scope: stranger }); await tick()
+    assert.ok([...counts.values()].reduce((sum, count) => sum + count, 0) > 0, 'a host-attributed scope outside every chain must still be treated as unadmitted')
+  } finally { await shutdown(ctx) }
 }))
 
 report('discovery-incremental')

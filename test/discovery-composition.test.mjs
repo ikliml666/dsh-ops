@@ -88,7 +88,7 @@ await test('the first Native-to-PTC assembly withdraws private probe tools witho
     await owner.ctx.plugin({ inject: ['tools'], apply(inner) { inner.tools.presentAs('ptc') } })
     const assembled = await prompt.assemble({ scope: owner })
     stopCounting()
-    assert.equal(seen.size, 4, 'one discovery probe, one PTC probe, the request and its first published rebuild')
+    assert.equal(seen.size, 4, 'three presentation probes plus one public assembly of the request')
     assert.equal(probes.size, 3, 'only the Native discovery probe needs no withdrawal rebuild')
     assert.ok(assembled.sections.some(section => section.name.startsWith('dsh-ops:repository-tooling:mode-ptc') && section.text))
     assert.deepEqual(assembled.tools.map(tool => tool.name), ['run_code'])

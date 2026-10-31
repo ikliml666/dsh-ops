@@ -139,7 +139,7 @@ export function mountPtc(root: Context, rawConfig: unknown, gate: PtcGate = { al
     }
     /** Probe changed scopes, then rebuild only their inheritance dependency family. */
     const queued = new Map<Agent, boolean>()
-    const reconcile = (force = false, targets?: ReadonlySet<Agent>, verify = true): Promise<void> => {
+    const reconcile = (force = false, targets?: ReadonlySet<Agent>, verifyVerdict = true): Promise<void> => {
       if (stopped || mutating) return Promise.resolve()
       for (const agent of targets ?? entries.keys()) {
         const entry = entries.get(agent)
@@ -172,7 +172,7 @@ export function mountPtc(root: Context, rawConfig: unknown, gate: PtcGate = { al
           // only part of a publish that depends on the registry — but it keeps the
           // verdict it holds instead of paying an assembly to re-derive a mode that a
           // `tools/change` cannot have moved. The next probe confirms it at pre-step.
-          if (!verify) { if (entry.ptc) ready.add(agent); continue }
+          if (!verifyVerdict) { if (entry.ptc) ready.add(agent); continue }
           probedBefore.add(agent)
           const next = gate.allows(agent) && await task.wait(ptcOnly(agent, task.signal)).catch(() => false)
           if (next !== entry.ptc) { dirty = true; changed.add(agent) }
@@ -295,8 +295,6 @@ export function mountPtc(root: Context, rawConfig: unknown, gate: PtcGate = { al
     // real assembly.
     let promptEpoch = 0, rederivedEpoch = 0
     ctx.on('system-prompt/change', () => { if (!stopped) ++promptEpoch })
-    // A registry change only owes a republish when some agent's surface moved, so the
-    // change listener republishes and lets the dirty check decide.
     onToolChange(ctx, scopes => {
       if (mutating || ownership?.publishing()) {
         if (!scopes?.length) foreignDuringPublish = true
@@ -312,11 +310,13 @@ export function mountPtc(root: Context, rawConfig: unknown, gate: PtcGate = { al
       if (!scopes?.length) {
         // A probe a superseded round still owes must not be dropped here: a publish that
         // was in flight keeps its request queued, and the deferred path is the only
-        // remaining chance to spend it.
-        const rederive = promptEpoch > rederivedEpoch || [...queued.values()].some(value => value === true)
-        if (rederive) rederivedEpoch = promptEpoch
+        // remaining chance to spend it. Spending it does not consume the prompt evidence,
+        // which no round has re-derived yet.
+        const moved = promptEpoch > rederivedEpoch
+        const verifyVerdict = moved || [...queued.values()].some(owed => owed)
+        if (moved) rederivedEpoch = promptEpoch
         for (const [agent, entry] of entries) if (!entry.ptc) queued.set(agent, true)
-        void reconcile(false, undefined, rederive)
+        void reconcile(false, undefined, verifyVerdict)
         return
       }
       const targets = new Set([...entries.keys()].filter(agent => scopes.some(scope => scopeChainOf(agent).includes(scope))))

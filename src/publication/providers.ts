@@ -78,8 +78,9 @@ export function claimNativeSelection(ctx: Host, scope: unknown, names: ReadonlyS
   owner.selections.add(selection); changed(owner, scope); refresh(owner, scope)
   return () => { owner.selections.delete(selection); changed(owner, scope); refresh(owner, scope) }
 }
-/** Yield only this plugin's registrations in the exact layer being claimed. */
+/** Whether this plugin holds an exact PTC claim over that layer, which excludes its Native tools. */
 export function ptcSurfaceClaimed(ctx: Host, scope: unknown): boolean { return state(ctx).ptc.has(scope) }
+/** Yield only this plugin's registrations in the exact layer being claimed. */
 export function claimPtcSurface(ctx: Host, scope: unknown): () => void {
   const owner = state(ctx)
   owner.ptc.add(scope); refresh(owner, scope)
@@ -107,12 +108,15 @@ export function trackNativeShadow(ctx: Host, scope: unknown, definition: ToolDef
  */
 function visibleOf(tools: ReturnType<Host['get']>, scope: unknown): (name: string) => ToolDefinition | undefined {
   if (tools === undefined) return () => undefined
-  const view = (tools as unknown as { view?(scope?: object): { visible?: Map<string, unknown> } | undefined }).view?.(scope as object)
-  if (view?.visible instanceof Map) {
-    const visible = view.visible
-    return name => visible.get(name) as ToolDefinition | undefined
+  // Duck-typed rather than `instanceof Map`, for the reason `surfaceOf` records: a host may
+  // serve the view through a subclass or a proxy, and a failed instanceof would silently
+  // take the per-provider `get()` path forever — the exact cost this function removes.
+  const visible = (tools as unknown as { view?(scope?: object): { visible?: { get?(name: string): unknown } } | undefined }).view?.(scope as object)?.visible
+  if (visible !== undefined && typeof visible.get === 'function') {
+    const get = visible.get.bind(visible)
+    return name => get(name) as ToolDefinition | undefined
   }
-  return name => tools?.get(name, scope)
+  return name => tools.get(name, scope)
 }
 
 /** Capture before publishing PTC: external restrictions and sibling scopes remain authoritative. */
