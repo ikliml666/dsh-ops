@@ -10,6 +10,7 @@ import * as ptcModule from '../lib/ptc/index.js'
 import { applyComponent } from '../lib/index.js'
 import { definition } from '../lib/file/contract.js'
 import { assert, test, report, waitFor, withTempDir } from './lib/harness.mjs'
+import { isPresentationProbe } from '../lib/presentation.js'
 import { bootHost, shutdown } from './lib/host.mjs'
 import { WORKER, requireWorker } from './lib/boundary.mjs'
 import { legacyComponent } from './lib/legacy-component.mjs'
@@ -35,7 +36,7 @@ async function setup(dir, discoveryFirst = true) {
   async function mint(mode = 'native', parent) {
     const id = 'combined-' + ++sequence, agent = { id, session: { id, mode: 'workspace-write', header: { cwd: dir }, append() {}, read() { return [] } } }
     agent.ctx = createScope(parent?.ctx ?? ctx, agent, parent ? { parent } : undefined).ctx
-    await agent.ctx.plugin({ inject: ['tools'], apply(inner) { inner.tools.presentAs(mode) } })
+    if (mode) await agent.ctx.plugin({ inject: ['tools'], apply(inner) { inner.tools.presentAs(mode) } })
     agents.push(agent)
     await ctx.serial('agent/created', { agent })
     return agent
@@ -73,6 +74,51 @@ for (const discoveryFirst of [true, false]) await test('combined Native/PTC/disc
     assert.ok(names(ctx, code).includes('ops_load_sdk'))
   } finally { await shutdown(ctx) }
 }))
+await test('the first Native-to-PTC assembly withdraws private probe tools without rebuilding the probe', () => withTempDir('discovery-first-ptc', async dir => {
+  const { ctx, mint } = await setup(dir)
+  try {
+    const owner = await mint(null), prompt = ctx.get('systemPrompt')
+    await prompt.assemble({ scope: owner })
+    const seen = new Set(), probes = new Set()
+    const stopCounting = ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+      seen.add(context)
+      if (isPresentationProbe(context)) probes.add(context)
+      return next()
+    })
+    await owner.ctx.plugin({ inject: ['tools'], apply(inner) { inner.tools.presentAs('ptc') } })
+    const assembled = await prompt.assemble({ scope: owner })
+    stopCounting()
+    assert.equal(seen.size, 4, 'three presentation probes plus one public assembly of the request')
+    assert.equal(probes.size, 3, 'only the Native discovery probe needs no withdrawal rebuild')
+    assert.ok(assembled.sections.some(section => section.name.startsWith('dsh-ops:repository-tooling:mode-ptc') && section.text))
+    assert.deepEqual(assembled.tools.map(tool => tool.name), ['run_code'])
+  } finally { await shutdown(ctx) }
+}))
+
+await test('a scoped change on a settled PTC surface does not trigger another probe', () => withTempDir('discovery-ptc-unchanged', async dir => {
+  const { ctx, mint } = await setup(dir)
+  try {
+    const owner = await mint('ptc'), prompt = ctx.get('systemPrompt')
+    await prompt.assemble({ scope: owner })
+    const probes = new Set()
+    const stopCounting = ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+      if (isPresentationProbe(context)) probes.add(context)
+      return next()
+    })
+    await ctx.plugin({ inject: ['tools'], apply(inner) { inner.tools.register(definition('stat')) } })
+    const first = await prompt.assemble({ scope: owner })
+    const afterUnattributedChange = probes.size
+    await ctx.serial('tools/change', { scope: owner.ctx })
+    const second = await prompt.assemble({ scope: owner })
+    stopCounting()
+    assert.equal(afterUnattributedChange, 1)
+    assert.equal(probes.size, 1, 'a scoped change on the settled PTC surface stays claim-driven')
+    assert.equal(second.tools.length, first.tools.length)
+    assert.ok(second.sections.some(section => section.name.startsWith('dsh-ops:repository-tooling:mode-ptc') && section.text))
+    assert.deepEqual(second.tools.map(tool => tool.name), ['run_code'])
+  } finally { await shutdown(ctx) }
+}))
+
 await test('overlapping discovery rows restore nearest ownership and preserve unrelated external definitions', () => withTempDir('discovery-rows', async dir => {
   const { ctx, mint, mountDiscovery, mountFile } = await setup(dir)
   try {

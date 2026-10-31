@@ -5,7 +5,7 @@ import type { PromptAssembly } from '../adapter/dsh/types.js'
 import type {} from '../adapter/dsh/types.js'
 import { resolveDiscoveryConfig } from '../config.js'
 import { NativeFileTools } from '../projections/native/runtime.js'
-import { nativeProviders, registerNativeProviderAtScope, claimNativeSelection } from '../publication/providers.js'
+import { nativeProviders, registerNativeProviderAtScope, claimNativeSelection, ptcSurfaceClaimed } from '../publication/providers.js'
 import { loadScopes } from '../adapter/dsh/host.js'
 import { onToolChange } from '../publication/changes.js'
 import { ownScopes } from '../publication/ownership.js'
@@ -124,6 +124,10 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
       const entry = entries.get(agent)
       if (!entry || !gate.allows(agent)) return false
       if (fresh) invalidate(entry)
+      // An exact PTC claim already excludes Native tools. Publication changes
+      // cannot turn that claim into a Native presentation; only a fresh probe
+      // may re-admit discovery after an unannounced dynamic-provider change.
+      if (!fresh && ptcSurfaceClaimed(ctx, agent)) return false
       const current = inputs(agent), revision = entry.revision
       if (entry.presentation && same(entry.presentation.inputs, current)) return entry.presentation.native
       const result = await isNativePresentation(prompt, agent, signal)
@@ -388,6 +392,9 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
       mutating = true
       try { cancelEntry(entry, 'Native presentation withdrawn'); clear(entry) }
       finally { mutating = false }
+      // The withdrawal already settled this probe's verdict. Its stale tool list
+      // is private to the inspection; only a public assembly needs rebuilding.
+      if (isPresentationProbe(context)) return result
       // Rebuild through the public host service after removing only our tools.
       // This cannot activate pending requests or rewrite another provider's text.
       return prompt.assemble(context)

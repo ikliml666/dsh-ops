@@ -11,6 +11,7 @@ import { bootHost, shutdown } from './lib/host.mjs'
 import { WORKER, requireWorker } from './lib/boundary.mjs'
 import * as ptcModule from '../lib/ptc/index.js'
 import { withToolChange } from '../lib/tool-changes.js'
+import { isPresentationProbe } from '../lib/presentation.js'
 import { mountNativeCatalogue } from './lib/native-catalogue.mjs'
 import { resolvePtcConfig } from '../lib/config.js'
 import { sdkDefinition, requestedApis } from '../lib/ptc/sdk.js'
@@ -18,6 +19,7 @@ import { legacyComponent } from './lib/legacy-component.mjs'
 const ptc = legacyComponent(ptcModule)
 requireWorker('ptc-sdk')
 let serial = 0
+const tick = () => new Promise(resolve => setImmediate(resolve))
 const visible = (ctx, agent) => ctx.get('tools').schemas(agent).map(tool => tool.name).filter(name => name.startsWith('ops_')).sort()
 async function setup(root, { native = false, config = {}, real = false } = {}) {
   const { ctx } = await bootHost()
@@ -275,3 +277,45 @@ await test('a prompt change re-derives the verdict of an unattributed registry c
   })
 })
 report('ptc-sdk')
+
+await test('an unattributed registry change defers the verdict instead of spending an assembly on it', async () => {
+  await withTempDir('ptc-verdict-defer', async root => {
+    const { ctx, agent } = await setup(root)
+    try {
+      const owner = await agent('ptc'), prompt = ctx.get('systemPrompt'), probes = new Map()
+      prompt.section({ name: 'verdict-counter', order: 10, text: context => {
+        if (isPresentationProbe(context)) probes.set(context.scope, (probes.get(context.scope) ?? 0) + 1)
+        return ''
+      } })
+      await prompt.assemble({ scope: owner }); await step(ctx, owner)
+      assert.ok(visible(ctx, owner).includes('ops_load_sdk'))
+      // Registering the counter is itself a prompt change; spend that evidence first so
+      // the case below is a registry change with no prompt change behind it.
+      await ctx.serial('tools/change')
+      for (let i = 0; i < 4; i++) await tick()
+      probes.clear()
+      // A registration the host reports without naming a scope moves this scope's surface
+      // — the new name is visible in it — but cannot move the presentation mode, which
+      // only `presentAs` moves. The republish must still happen; the verdict must not cost
+      // an assembly to confirm what no registry event can have changed.
+      await ctx.plugin({ inject: ['tools'], apply(inner) {
+        inner.tools.register({ name: 'verdict_extra', description: '', parameters: { type: 'object' },
+          output: { schema: {}, render: () => [] }, execute: () => ({}) })
+      } })
+      for (let i = 0; i < 4; i++) await tick()
+      console.log('  after unattributed registration: probes=' + (probes.get(owner) ?? 0))
+      assert.equal(probes.get(owner) ?? 0, 0, 'an unattributed registry change must not re-derive a settled verdict')
+      assert.ok(visible(ctx, owner).includes('ops_load_sdk'), 'the deferred change still republishes')
+      // A prompt change is the evidence that a mode may have flipped, so the registry
+      // change that follows it must spend the probe the deferred path would have skipped.
+      await ctx.serial('system-prompt/change')
+      await ctx.plugin({ inject: ['tools'], apply(inner) {
+        inner.tools.register({ name: 'verdict_later', description: '', parameters: { type: 'object' },
+          output: { schema: {}, render: () => [] }, execute: () => ({}) })
+      } })
+      for (let i = 0; i < 4; i++) await tick()
+      console.log(`  after a prompt change and a registration: probes=${probes.get(owner) ?? 0}`)
+      assert.equal(probes.get(owner) ?? 0, 1, 'a prompt change since the last re-derivation owes one verdict probe')
+    } finally { await shutdown(ctx) }
+  })
+})

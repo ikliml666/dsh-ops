@@ -27,9 +27,8 @@ function hostScope(args: readonly unknown[]): object | undefined {
   const payload = args[0]
   if (payload === null || typeof payload !== 'object') return undefined
   const scope = (payload as { scope?: unknown }).scope
-  // A scope is one object identity, and a chain walk compares identity, so a
-  // malformed payload matches no agent. The unattributed fallback in the caller is
-  // what keeps such a change from being dropped silently.
+  // A scope is one object identity and a chain walk compares identity, so a
+  // malformed payload matches no agent.
   return scope === undefined || scope === null || typeof scope !== 'object' ? undefined : scope
 }
 /**

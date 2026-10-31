@@ -44,3 +44,21 @@ per-session cost, because rc's `schemas()` copies every visible `parameters`
 through `snapshotJsonValue`. Running it disproves that: the surface read is about
 0.03ms regardless of the live set, so the remainder sits in the publish loop.
 Keep it as the record of that dead end, not as a live benchmark.
+
+`probe-490-reentry.mjs` measures the fix for the first Native-to-PTC switch
+directly. It wraps `prompt.assemble` to record every assembly's nesting depth and
+whether it was one of this package's presentation probes, wraps `tools.sdkSection`
+to count how often the resident SDK declarations are rendered, and prints one line
+per transition:
+
+| Label | What it measures |
+| --- | --- |
+| `native->native` | a steady Native request — the floor |
+| `native->ptc` | the switch the issue reports: three probes and the request |
+| `ptc->ptc` | a steady PTC request after the switch settled |
+
+Before the fix the switch took seven assemblies with a nesting depth of four and
+rendered the SDK declarations seven times; it now takes four at depth three and
+renders them four times, and the final assembly carries
+`harness:identity`, `tools:ptc-only`, `dsh-ops:repository-tooling:mode-ptc` and
+`tools:sdk` with `run_code` as its only tool.
