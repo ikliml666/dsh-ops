@@ -306,6 +306,9 @@ export function mountDiscovery(root: Context, raw: unknown, gate: DiscoveryGate)
       if (stopped) return
       const representative = [...entries].find(([agent, entry]) => coordinable(agent, entry))
       if (!representative) {
+        // Nothing here can be probed, so `reconcile` would walk every entry only to skip
+        // each one. Withdrawing stale registrations is `refresh`'s job on a publication-set
+        // change; a presentation hint carries no authority to withdraw anything.
         for (const entry of entries.values()) invalidate(entry)
         return
       }

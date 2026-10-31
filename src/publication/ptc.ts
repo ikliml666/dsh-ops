@@ -323,7 +323,9 @@ export function mountPtc(root: Context, rawConfig: unknown, gate: PtcGate = { al
         // A probe a superseded round still owes must not be dropped here: a publish that
         // was in flight keeps its request queued, and the deferred path is the only
         // remaining chance to spend it. Spending it does not consume the prompt evidence,
-        // which no round has re-derived yet.
+        // which no round has re-derived yet. `test/preset-integration.test.mjs` locks this
+        // through a preset switch back to a PTC label: the owed probe is the only thing
+        // that republishes the SDK the withdrawn scope lost.
         const moved = promptEpoch > rederivedEpoch
         const verifyVerdict = moved || [...queued.values()].some(owed => owed)
         if (moved) rederivedEpoch = promptEpoch

@@ -104,7 +104,7 @@ async function measure(live, scenario) {
     // present ptc. Booting with toolsMode:'ptc' would make every session ptc,
     // which leaves the ptc side's !entry.ptc set empty and hides the very path
     // this probe exists to measure.
-    const { ctx } = await bootHost({ toolsMode: 'native', withWorkingDirectory: true })
+    const { ctx } = await bootHost({ toolsMode: 'native' })
     await ctx.plugin(Subprocess)
     await ctx.plugin(Sandbox, {})
     await ctx.plugin(inner => inner.provide('sandboxPolicy', {

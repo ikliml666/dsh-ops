@@ -9,7 +9,7 @@ import { legacyComponent } from '../../test/lib/legacy-component.mjs'
 import { WORKER } from '../../test/lib/boundary.mjs'
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reentry-'))
-const { ctx } = await bootHost({ toolsMode: 'native', withWorkingDirectory: true })
+const { ctx } = await bootHost({ toolsMode: 'native' })
 await ctx.plugin(Subprocess); await ctx.plugin(Sandbox, {})
 await ctx.plugin(inner => inner.provide('sandboxPolicy', { resolve: ({ session }) => ({ mode: session.mode, workspaceRoot: session.header.cwd, sessionId: session.id }) }))
 await ctx.plugin(inner => inner.provide('ptcRuntime', { language: 'typescript', programFormat: 'inline' }))

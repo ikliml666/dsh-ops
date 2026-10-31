@@ -21,7 +21,7 @@ import { surfaceOf } from '../../lib/surface.js'
 
 const TOOLS = Number(process.env.PROBE_TOOLS ?? 150)
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-490-surface-'))
-const { ctx } = await bootHost({ toolsMode: 'native', withWorkingDirectory: true })
+const { ctx } = await bootHost({ toolsMode: 'native' })
 
 const bulkTool = index => ({
   name: `surface_probe_${index}`,

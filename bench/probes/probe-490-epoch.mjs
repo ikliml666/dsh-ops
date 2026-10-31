@@ -13,7 +13,7 @@ import path from 'node:path'
 import { bootHost, shutdown } from '../../test/lib/host.mjs'
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-490-epoch-'))
-const { ctx } = await bootHost({ toolsMode: 'ptc', withWorkingDirectory: true })
+const { ctx } = await bootHost({ toolsMode: 'ptc' })
 
 let promptChanges = 0
 let toolChanges = 0
